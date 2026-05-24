@@ -1,6 +1,6 @@
 # bz.telemetry
 
-Opt-in error reporting + analytics framework for **bugbytz** Max for Live
+Opt-in error reporting + analytics framework for Max for Live
 devices.  Drop a single `[bz.telemetry]` object into any device and you
 get:
 
