@@ -1,11 +1,11 @@
 # bz.telemetry
 
-Opt-in error reporting + analytics framework for **bugbytz** Max for Live
+Opt-in error reporting + analytics framework for Max for Live
 devices.  Drop a single `[bz.telemetry]` object into any device and you
 get:
 
 - A persistent, per-user **consent flag** so the installer prompt only
-  shows up once across every bugbytz device.
+  shows up once across every participating device.
 - An **anonymous device ID** (UUID, generated on first run) that lets you
   correlate events from the same install without learning anything PII.
 - A **disk-backed event queue** that survives offline sessions, host
