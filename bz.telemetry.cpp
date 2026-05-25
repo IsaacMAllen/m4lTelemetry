@@ -370,8 +370,11 @@ private:
     // `const symbol&` (not `symbol`) because attribute<T> exposes BOTH
     // `operator const T&() const` and `operator T&()`, which makes a plain
     // copy-cast ambiguous.
+    // We then go via `const char*` explicitly because MSVC considers a
+    // direct std::string(symbol) ambiguous: symbol has conversion operators
+    // to both `const char*` and `std::string`.
     static std::string sym_str(const attribute<symbol>& a) {
-        return std::string(static_cast<const symbol&>(a));
+        return std::string(static_cast<const char*>(static_cast<const symbol&>(a)));
     }
 
     std::string device_name() const {
