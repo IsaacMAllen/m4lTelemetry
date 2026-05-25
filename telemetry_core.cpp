@@ -204,9 +204,20 @@ namespace bz { namespace telemetry {
         config             cfg;
         std::atomic<bool>  initialized { false };
 
-        // Consent.
+        // Consent.  Note that, because each Max external is a separate
+        // dylib bundle, each bundle linking telemetry_core gets its OWN
+        // private `client` singleton -- they all read/write the same
+        // config.json on disk, but their in-memory `consent` values are
+        // independent.  To keep them coherent, we re-read consent from
+        // disk on every consent-gated path (enqueue / worker upload),
+        // throttled by the file's mtime.  See maybe_reload_consent().
         mutable std::mutex     consent_mutex_;
         consent_status         consent { consent_status::unknown };
+
+        // Last-seen mtime of config.json, used by maybe_reload_consent()
+        // to avoid re-parsing on every call.  Stored as nanoseconds since
+        // epoch so we can compare with one atomic load/store.
+        std::atomic<int64_t>   last_config_mtime_ns_ { 0 };
 
         // Identifiers.
         std::string device_id;
@@ -312,6 +323,53 @@ namespace bz { namespace telemetry {
                 device_id = platform_uuid_v4();
                 save_config();
             }
+            // Seed the mtime tracker so we don't immediately re-parse what
+            // we just loaded (or just created via save_config()).
+            std::error_code ec;
+            auto t = fs::last_write_time(config_path, ec);
+            if (!ec) {
+                last_config_mtime_ns_.store(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        t.time_since_epoch()).count(),
+                    std::memory_order_relaxed);
+            }
+        }
+
+        // Pick up consent flips that happened in OTHER bundles (or other
+        // processes) by re-parsing config.json whenever its mtime advances.
+        // Cheap: one stat() + (if mtime changed) one short read + parse.
+        // Called from enqueue() and from the worker before it consults
+        // consent for an upload, so any consent change is honoured before
+        // the next event is queued or sent.
+        void maybe_reload_consent() {
+            std::error_code ec;
+            auto t = fs::last_write_time(config_path, ec);
+            if (ec) return;
+            const int64_t t_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                t.time_since_epoch()).count();
+            int64_t prev = last_config_mtime_ns_.load(std::memory_order_relaxed);
+            if (t_ns == prev) return;
+            // Race-tolerant compare-exchange: if another thread on this same
+            // bundle is already reloading, let it win and skip the work.
+            if (!last_config_mtime_ns_.compare_exchange_strong(
+                    prev, t_ns, std::memory_order_acq_rel)) {
+                return;
+            }
+
+            std::ifstream in(config_path);
+            if (!in) return;
+            std::stringstream ss;
+            ss << in.rdbuf();
+            std::string doc = ss.str();
+            std::string c = json::find_string_field(doc, "consent");
+
+            consent_status fresh;
+            if      (c == "granted") fresh = consent_status::granted;
+            else if (c == "denied")  fresh = consent_status::denied;
+            else                     fresh = consent_status::unknown;
+
+            std::lock_guard<std::mutex> g(consent_mutex_);
+            consent = fresh;
         }
 
         // Atomic write: write to .tmp, rename over the real file.
@@ -362,6 +420,10 @@ namespace bz { namespace telemetry {
         // written to disk).  The worker will pick it up via inotify-like
         // polling on its next wakeup (CV signalled here).
         bool enqueue(const event& e) {
+            // Pick up any consent change made by a sibling bundle (or by
+            // bz.consent_prompt's modal) since this singleton last looked.
+            // Cheap: stat() + (if changed) tiny re-read.
+            maybe_reload_consent();
             // Honour consent.  Errors / crashes are dropped silently when
             // consent != granted — that's the whole point of opt-in.
             {
@@ -542,7 +604,10 @@ namespace bz { namespace telemetry {
 
             // Don't upload without consent.  We still process tombstones
             // above so that a later opt-in can pick them up, but we won't
-            // POST anything without explicit consent.
+            // POST anything without explicit consent.  Re-read the on-disk
+            // consent first so a consent flip in a sibling bundle (e.g. via
+            // bz.consent_prompt) takes effect on the very next upload pass.
+            maybe_reload_consent();
             {
                 std::lock_guard<std::mutex> g(consent_mutex_);
                 if (consent != consent_status::granted) return;
@@ -837,13 +902,17 @@ namespace bz { namespace telemetry {
     }
 
     // -------------------------------------------------------------------------
-    // Default (non-Apple) stubs.  The real platform implementations live in
-    // telemetry_http.mm and telemetry_crash.mm; on macOS they replace these
-    // weak symbols at link time.  On other platforms the framework still
-    // builds: it persists events to disk and counts them, just doesn't POST
-    // anything or capture crashes.
+    // Default (non-Apple, non-Windows) stubs.
+    //
+    // The real platform implementations live in:
+    //   macOS   : telemetry_http.mm / telemetry_crash.mm
+    //   Windows : telemetry_http_win.cpp / telemetry_crash_win.cpp
+    //
+    // On other platforms (Linux, etc.) the framework still builds: it
+    // persists events to disk and counts them, but doesn't POST anything or
+    // capture crashes.
     // -------------------------------------------------------------------------
-#if !defined(__APPLE__)
+#if !defined(__APPLE__) && !defined(_WIN32)
     bool http_post_ndjson(const std::string&, const std::string&,
                           const std::string&, std::string& error_out) {
         error_out = "no http transport on this platform";

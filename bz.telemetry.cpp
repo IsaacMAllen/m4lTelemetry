@@ -234,8 +234,11 @@ public:
     // ------------------------------------------------------------------
     // Logging messages
     // ------------------------------------------------------------------
+    // NOTE: keep description strings free of '<' and '>' — Min's auto-generated
+    // bz.telemetry.maxref.xml only HTML-escapes '&', not the angle brackets,
+    // so any '<foo>' placeholder syntax breaks Max's XML doc parser.
     message<> m_log_event { this, "log_event",
-        "log_event <name> [key value]...  Log a custom analytics event.",
+        "log_event name [key value]...  Log a custom analytics event.",
         MIN_FUNCTION {
             if (args.empty()) {
                 cerr << "[bz.telemetry] log_event requires a name" << endl;
@@ -250,7 +253,7 @@ public:
     };
 
     message<> m_log_error { this, "log_error",
-        "log_error <name> <message> [key value]...  Log a non-fatal error.",
+        "log_error name message [key value]...  Log a non-fatal error.",
         MIN_FUNCTION {
             if (args.size() < 2) {
                 cerr << "[bz.telemetry] log_error requires <name> <message>" << endl;
@@ -266,7 +269,7 @@ public:
     };
 
     message<> m_log_metric { this, "log_metric",
-        "log_metric <name> <number> [unit] [key value]...  Log a numeric metric.",
+        "log_metric name number [unit] [key value]...  Log a numeric metric.",
         MIN_FUNCTION {
             if (args.size() < 2) {
                 cerr << "[bz.telemetry] log_metric requires <name> <number>" << endl;
@@ -290,7 +293,7 @@ public:
     };
 
     message<> m_report_crash { this, "report_crash",
-        "report_crash <name> <message> [key value]...  Manually report a fatal "
+        "report_crash name message [key value]...  Manually report a fatal "
         "condition (e.g. an exception caught in script code).",
         MIN_FUNCTION {
             if (args.size() < 2) {
@@ -307,7 +310,7 @@ public:
     };
 
     message<> m_set_user { this, "set_user",
-        "set_user <id>  Attach an optional user identifier (e.g. email) to "
+        "set_user id  Attach an optional user identifier (e.g. email) to "
         "subsequent events.  Pass an empty symbol to clear.",
         MIN_FUNCTION {
             std::string u = args.empty() ? std::string() : std::string(args[0]);
@@ -389,7 +392,21 @@ private:
     }
 
     // Re-push every attribute into the singleton.  Idempotent.
+    //
+    // CRITICAL: this is guarded on object_base::initialized().  Min applies
+    // each attribute's default value during the attribute's own constructor,
+    // which fires the setter BEFORE the *other* attributes have been
+    // constructed.  If we read those uninitialized members we crash inside
+    // ext_main with a wild-pointer SIGSEGV.  Min flips initialized() to
+    // true once the whole min-object has been postinitialized, AT WHICH
+    // POINT it's safe to read every attribute member — and importantly,
+    // attr_args_process (which applies the @attr arguments from the box
+    // text) and the periodic setter calls all fire AFTER that flip, so
+    // we don't lose any config updates.
     void push_config_to_client() {
+        if (!this->initialized()) {
+            return;
+        }
         bz::telemetry::config cfg;
         cfg.endpoint               = sym_str(a_endpoint);
         cfg.endpoint_token         = sym_str(a_token);

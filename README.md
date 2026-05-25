@@ -12,8 +12,9 @@ get:
   crashes and force-quits.  Pending events drain on the next launch.
 - A **background uploader thread** that POSTs newline-delimited JSON to
   any REST endpoint you control.
-- Opt-in **crash capture** via `std::set_terminate` and POSIX signal
-  handlers.  Crashes write tombstone files on disk and are converted to
+- Opt-in **crash capture** via `std::set_terminate` and platform crash
+  hooks (POSIX signals on macOS; `SetUnhandledExceptionFilter` on
+  Windows).  Crashes write tombstone files on disk and are converted to
   upload events the next time any bugbytz device loads.
 
 The whole thing is one shared singleton — multiple `[bz.telemetry]`
@@ -24,14 +25,16 @@ ten bugbytz devices in one Live set does **not** start ten threads.
 
 ## Files
 
-| File | Purpose |
-| --- | --- |
-| `bz.telemetry.cpp`     | Min external `[bz.telemetry]` |
-| `telemetry_core.hpp`   | Public C++ API for re-use by other externals |
-| `telemetry_core.cpp`   | Consent + queue + worker thread (cross-platform) |
-| `telemetry_http.mm`    | macOS HTTP transport (`NSURLSession`) |
-| `telemetry_crash.mm`   | macOS crash hooks (signals + `std::terminate`) |
-| `CMakeLists.txt`       | Build target |
+| File | Platform | Purpose |
+| --- | --- | --- |
+| `bz.telemetry.cpp`        | all     | Min external `[bz.telemetry]` |
+| `telemetry_core.hpp`      | all     | Public C++ API for re-use by other externals |
+| `telemetry_core.cpp`      | all     | Consent + queue + worker thread (cross-platform) |
+| `telemetry_http.mm`       | macOS   | HTTP transport (`NSURLSession`) |
+| `telemetry_crash.mm`      | macOS   | Crash hooks (POSIX signals + `std::terminate`) |
+| `telemetry_http_win.cpp`  | Windows | HTTP transport (WinHTTP) + platform helpers |
+| `telemetry_crash_win.cpp` | Windows | Crash hooks (`SetUnhandledExceptionFilter` + `std::terminate`) |
+| `CMakeLists.txt`          | all     | Build target |
 
 The help patcher lives at `help/bz.telemetry.maxhelp` and contains a
 ready-to-copy installer-prompt panel.
@@ -62,9 +65,11 @@ inlet:
    +- show prompt panel  →  [consent_grant ( | [consent_revoke (  →  [bz.telemetry]
 ```
 
-Consent is persisted at
-`~/Library/Application Support/bugbytz/telemetry/config.json` and
-applies to **every** bugbytz device on the machine, so the user is only
+Consent is persisted in the platform app-support directory:
+- **macOS** — `~/Library/Application Support/bugbytz/telemetry/config.json`
+- **Windows** — `%APPDATA%\bugbytz\telemetry\config.json`
+
+It applies to **every** bugbytz device on the machine, so the user is only
 ever asked once.
 
 ### 2. Logging
@@ -171,8 +176,10 @@ app.listen(8080);
 
 ## On-disk layout
 
+**macOS** (`~/Library/Application Support/bugbytz/telemetry/`):
+
 ```
-~/Library/Application Support/bugbytz/telemetry/
+bugbytz/telemetry/
 ├── config.json          # consent + anonymous device id (~200 bytes)
 ├── pending/             # one file per queued event
 │   └── 00000017482137...-abc123.json
@@ -180,12 +187,23 @@ app.listen(8080);
     └── 1748213723-11-12345.tomb
 ```
 
+**Windows** (`%APPDATA%\bugbytz\telemetry\`):
+
+```
+bugbytz\telemetry\
+├── config.json
+├── pending\
+│   └── 00000017482137...-abc123.json
+└── tombstones\
+    └── 20260523-123456-0000005-1234.tomb
+```
+
 `pending/<ts_ms>-<uuid>.json` filenames are sortable so the worker
 uploads in chronological order.  On success the file is deleted.
 
-`tombstones/*.tomb` are simple `key=value\n` text files, written by the
-signal handler with only async-signal-safe calls (no malloc, no
-NSString).  On the next launch any `[bz.telemetry]` instance drains the
+`tombstones/*.tomb` are simple `key=value\n` text files written using
+only async-signal-safe system calls (no heap allocation, no Objective-C
+or COM).  On the next launch any `[bz.telemetry]` instance drains the
 folder and converts each entry to a `crash` event.
 
 The user can clear everything by sending `clear_queue` or by deleting
@@ -213,9 +231,11 @@ the folder manually.
 
 The Max wrapper is optional.  If you want to call into the framework
 from another external in this repo, just `#include "telemetry_core.hpp"`
-and link against `telemetry_core.cpp` + the platform `.mm` files (or add
-this folder as a CMake `target_link_libraries` after exposing the
-`bz.telemetry` target as a library, see CMakeLists.txt).
+and link against `telemetry_core.cpp` + the appropriate platform files
+(`telemetry_http.mm` + `telemetry_crash.mm` on macOS, or
+`telemetry_http_win.cpp` + `telemetry_crash_win.cpp` on Windows).
+Alternatively, add this folder as a CMake `target_link_libraries` after
+exposing the `bz.telemetry` target as a library (see CMakeLists.txt).
 
 ```cpp
 #include "telemetry_core.hpp"
@@ -239,7 +259,7 @@ all use the same queue.
 
 ## Roadmap
 
-- [ ] Stack traces in the crash tombstone (linking libunwind).
-- [ ] WinHTTP backend so devices ship cross-platform.
+- [ ] Stack traces in crash tombstones (libunwind / StackWalk64).
+- [x] WinHTTP backend so devices ship cross-platform.
 - [ ] Optional Sentry-compatible payload format toggle.
 - [ ] Sampling for high-volume `log_event` / `log_metric` calls.

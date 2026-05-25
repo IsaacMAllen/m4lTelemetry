@@ -13,17 +13,18 @@
 //      mutex-protected std::deque and returns immediately.  All disk + network
 //      work happens on a single background worker thread.
 //
-//   2. Privacy-respecting opt-in.  Nothing is uploaded until the user has
-//      explicitly granted consent (status == granted).  Consent is stored
-//      per-user in ~/Library/Application Support/bugbytz/telemetry/config.json
-//      and is shared across every bugbytz device on the machine, so the user
-//      only ever has to answer the installer prompt once.
-//
-//   3. Survives offline / crashed sessions.  Pending events are persisted to
-//      disk as one file per event in
-//      ~/Library/Application Support/bugbytz/telemetry/pending/<uuid>.json
-//      and drain on the next launch.  Crash tombstones live in a sibling
-//      tombstones/ folder and are converted to events on the next launch.
+    //   2. Privacy-respecting opt-in.  Nothing is uploaded until the user has
+    //      explicitly granted consent (status == granted).  Consent is stored
+    //      per-user in the platform app-support directory:
+    //        macOS   : ~/Library/Application Support/bugbytz/telemetry/config.json
+    //        Windows : %APPDATA%\bugbytz\telemetry\config.json
+    //      The file is shared across every bugbytz device on the machine, so
+    //      the user only ever has to answer the installer prompt once.
+    //
+    //   3. Survives offline / crashed sessions.  Pending events are persisted to
+    //      disk as one file per event under .../bugbytz/telemetry/pending/ and
+    //      drain on the next launch.  Crash tombstones live in a sibling
+    //      tombstones/ folder and are converted to events on the next launch.
 //
 //   4. Crashes themselves are captured asynchronously via std::set_terminate
 //      and a small set of opt-in signal handlers that only do
@@ -34,8 +35,8 @@
 //   5. Endpoint contract is a single REST POST of newline-delimited JSON
 //      events.  See telemetry_http.mm for the on-the-wire schema.
 //
-// macOS-only at present.  The non-mac builds compile the core but skip the
-// uploader thread's HTTP step and the crash hooks.
+// macOS and Windows are fully supported.  Other platforms compile the core
+// but use stub no-ops for the HTTP transport and crash hooks.
 // -----------------------------------------------------------------------------
 #pragma once
 
@@ -221,7 +222,7 @@ namespace bz { namespace telemetry {
 
     // Platform helpers used by the core but easier to write in Objective-C.
     // (App Support directory resolution + macOS version string.)
-    std::string platform_app_support_dir();    // ~/Library/Application Support on macOS
+    std::string platform_app_support_dir();    // ~/Library/Application Support (macOS) / %APPDATA% (Windows)
     std::string platform_os_string();          // "macOS 14.4" / "Windows 10" / etc.
     std::string platform_max_version_hint();   // best-effort host process version
     std::string platform_uuid_v4();            // RFC4122 v4 UUID, lowercase
